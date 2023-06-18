@@ -242,6 +242,28 @@ static int fuse_example_create(const char *path, mode_t mode, struct fuse_file_i
     return 0;
 }
 
+static int fuse_example_truncate(const char *path, off_t newsize) {
+    int inode = lookup_inode(path);
+    if (inode < 0) return -ENOENT;  // No such file or directory
+
+    fs_object *obj = &fs_objects[inode];
+    if (obj->data) {
+        // Resize the data.
+        obj->data = realloc(obj->data, newsize + 1);  // +1 for the null terminator
+        if (!obj->data) return -ENOMEM;
+        if (newsize > strlen(obj->data)) {
+            memset(obj->data + strlen(obj->data), 0, newsize - strlen(obj->data));
+        }
+        obj->data[newsize] = '\0';
+    } else {
+        // No data yet, so allocate a new buffer.
+        obj->data = calloc(1, newsize + 1);  // +1 for the null terminator
+        if (!obj->data) return -ENOMEM;
+    }
+
+    return 0;
+}
+
 
 static struct fuse_operations fuse_example_oper = {
     .getattr = fuse_example_getattr,
@@ -250,6 +272,8 @@ static struct fuse_operations fuse_example_oper = {
     .readdir = fuse_example_readdir,
 	.write = fuse_example_write,
 	.create = fuse_example_create,
+    .truncate = fuse_example_truncate,
+
 };
 
 int main(int argc, char *argv[]) {
