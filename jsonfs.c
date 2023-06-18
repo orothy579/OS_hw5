@@ -121,9 +121,9 @@ static int fuse_example_open(const char *path, struct fuse_file_info *fi) {
     int inode = lookup_inode(path);
     if (inode < 0) return -ENOENT;  // No such file or directory
 
-    if ((fi->flags & 3) != O_RDONLY) {
-        return -EACCES;  // Access denied
-    }
+//    if ((fi->flags & 3) != O_RDONLY) {
+//        return -EACCES;  // Access denied
+//    }
 
     return 0;
 }
