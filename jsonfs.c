@@ -11,6 +11,7 @@ typedef struct {
     int inode;
     const char *type;
     const char *name;
+    const char *data;
     struct json_object *entries;
 } fs_object;
 
@@ -36,6 +37,10 @@ static void load_json_fs(const char *filename) {
             fs_objects[i].type = json_object_get_string(tmp);
         if (json_object_object_get_ex(obj, "name", &tmp))
             fs_objects[i].name = json_object_get_string(tmp);
+        if (json_object_object_get_ex(obj, "data", &tmp))
+            fs_objects[i].data = json_object_get_string(tmp);
+        else
+            fs_objects[i].data = NULL;
         if (json_object_object_get_ex(obj, "entries", &tmp))
             fs_objects[i].entries = tmp;
 
@@ -54,8 +59,11 @@ static fs_object *find_fs_object_by_path(const char *path) {
         int num_entries = json_object_array_length(fs_objects[i].entries);
         for (int j = 0; j < num_entries; j++) {
             entry = json_object_array_get_idx(fs_objects[i].entries, j);
-            if (strcmp(json_object_get_string(json_object_object_get_ex(entry, "name")), path + 1) == 0) {
-                return &fs_objects[i];
+            struct json_object *name_obj;
+            if (json_object_object_get_ex(entry, "name", &name_obj)) {
+                if (strcmp(json_object_get_string(name_obj), path + 1) == 0) {
+                    return &fs_objects[i];
+                }
             }
         }
     }
@@ -79,7 +87,7 @@ static int getattr_callback(const char *path, struct stat *stbuf)
     } else if (strcmp(fs_obj->type, "reg") == 0) {
         stbuf->st_mode = S_IFREG | 0444;
         stbuf->st_nlink = 1;
-        stbuf->st_size = strlen(fs_obj->data); // assuming 'data' is a string in your fs_object
+        stbuf->st_size = fs_obj->data ? strlen(fs_obj->data) : 0; // assuming 'data' is a string in your fs_object
     } else {
         res = -ENOENT; // No such file or directory
     }
