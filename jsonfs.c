@@ -104,11 +104,11 @@ static int fuse_example_getattr(const char *path, struct stat *stbuf) {
     print_fs_object(obj);  
     // check path information
     if (strcmp(obj->type, "reg") == 0) {
-        stbuf->st_mode = S_IFREG | 0444;
+        stbuf->st_mode = S_IFREG | 0666;
         stbuf->st_nlink = 1;
         stbuf->st_size = obj->data ? strlen(obj->data) : 0;
     } else if (strcmp(obj->type, "dir") == 0) {
-        stbuf->st_mode = S_IFDIR | 0555;
+        stbuf->st_mode = S_IFDIR | 0777;
         stbuf->st_nlink = 2;
     } else {
         return -ENOENT;  // No such file or directory
@@ -264,6 +264,17 @@ static int fuse_example_truncate(const char *path, off_t newsize) {
     return 0;
 }
 
+static int fuse_example_utimens(const char *path, const struct timespec tv[2]) {
+    int inode = lookup_inode(path);
+    if (inode < 0) return -ENOENT;  // No such file or directory
+
+    // In a real filesystem, we would update the timestamps in the inode here.
+    // However, since we're not keeping track of timestamps in this example, we'll just do nothing.
+
+    return 0;
+}
+
+
 
 static struct fuse_operations fuse_example_oper = {
     .getattr = fuse_example_getattr,
@@ -273,8 +284,11 @@ static struct fuse_operations fuse_example_oper = {
 	.write = fuse_example_write,
 	.create = fuse_example_create,
     .truncate = fuse_example_truncate,
+    .utimens = fuse_example_utimens,
 
 };
+
+
 
 int main(int argc, char *argv[]) {
     load_json_fs("fs.json");
