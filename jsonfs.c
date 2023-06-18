@@ -95,8 +95,6 @@ static int getattr_callback(const char *path, struct stat *stbuf)
     return res;
 }
 
-
-
 static int readdir_callback(const char *path, void *buf, fuse_fill_dir_t filler,
                             off_t offset, struct fuse_file_info *fi) {
     fs_object *dir = find_fs_object_by_path(path);
