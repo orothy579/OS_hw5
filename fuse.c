@@ -55,7 +55,6 @@ struct jsonfs* load_jsonfs() {
         fprintf(stderr, "Cannot open JSON file: %s\n", path);
         return NULL;
     }
-
     struct jsonfs* new_jsonfs = malloc(sizeof(struct jsonfs));
     struct json_object* tmp;
     
@@ -69,7 +68,12 @@ struct jsonfs* load_jsonfs() {
 			return NULL;
 		}
         new_jsonfs->type = strdup(json_object_get_string(tmp));
+	}	else {
+			fprintf(stderr, "Type field does not exist in JSON\n");
+			free(new_jsonfs);
+			return NULL;
 	}
+	
 	if(new_jsonfs->type == NULL) {
 		fprintf(stderr, "Type is NULL\n");
 		free(new_jsonfs);
@@ -100,7 +104,6 @@ struct jsonfs* load_jsonfs() {
         free(new_jsonfs);
         return NULL;
     }
-
     return new_jsonfs;
 }
 
