@@ -1,5 +1,6 @@
 #define FUSE_USE_VERSION 26
 
+#include <stdbool.h>
 #include <fuse.h>
 #include <stdio.h>
 #include <string.h>
@@ -59,28 +60,49 @@ static void load_json_fs(const char *filename) {
 }
 
 static int lookup_inode(const char *path) {
-    if (strcmp(path, "/") == 0) {
-        return 0;  // root 디렉토리 인덱스
-    }
+    char *path_copy = strdup(path);
+    char *seg = strtok(path_copy, "/");
+    int inode = 0;  // root directory
 
-    for (int i = 1; i < num_fs_objects; i++) {
-        if (fs_objects[i].name && strcmp(fs_objects[i].name, path + 1) == 0) {
-            return fs_objects[i].inode;
+    while (seg != NULL) {
+        bool found = false;
+        const fs_object *dir_obj = &fs_objects[inode];
+        int entries_length = json_object_array_length(dir_obj->entries);
+        for (int i = 0; i < entries_length; i++) {
+            struct json_object *entry_obj = json_object_array_get_idx(dir_obj->entries, i);
+            struct json_object *name_obj, *inode_obj;
+
+            if (json_object_object_get_ex(entry_obj, "name", &name_obj) && json_object_object_get_ex(entry_obj, "inode", &inode_obj)) {
+                const char *name = json_object_get_string(name_obj);
+                if (strcmp(name, seg) == 0) {
+                    inode = json_object_get_int(inode_obj);
+                    found = true;
+                    break;
+                }
+            }
         }
+
+        if (!found) {
+            free(path_copy);
+            return -1;  // inode not found
+        }
+
+        seg = strtok(NULL, "/");
     }
 
-    return -1;  // 인덱스가 없음
+    free(path_copy);
+    return inode;
 }
 
 
 static int fuse_example_getattr(const char *path, struct stat *stbuf) {
     memset(stbuf, 0, sizeof(struct stat));
     int inode = lookup_inode(path);
-    if (inode < 0) return -ENOENT;  // 파일을 찾을 수 없음
+    if (inode < 0) return -ENOENT;  // No such file or directory
 
     const fs_object *obj = &fs_objects[inode];
     print_fs_object(obj);  
-    // 경로 정보를 확인해 봅니다.
+    // check path information
     if (strcmp(obj->type, "reg") == 0) {
         stbuf->st_mode = S_IFREG | 0444;
         stbuf->st_nlink = 1;
@@ -89,19 +111,18 @@ static int fuse_example_getattr(const char *path, struct stat *stbuf) {
         stbuf->st_mode = S_IFDIR | 0555;
         stbuf->st_nlink = 2;
     } else {
-        return -ENOENT;  // 파일을 찾을 수 없음
+        return -ENOENT;  // No such file or directory
     }
 
-    stbuf->st_ino = obj->inode;
     return 0;
 }
 
 static int fuse_example_open(const char *path, struct fuse_file_info *fi) {
     int inode = lookup_inode(path);
-    if (inode < 0) return -ENOENT;  // 파일을 찾을 수 없음
+    if (inode < 0) return -ENOENT;  // No such file or directory
 
     if ((fi->flags & 3) != O_RDONLY) {
-        return -EACCES;  // 액세스 거부
+        return -EACCES;  // Access denied
     }
 
     return 0;
@@ -110,7 +131,7 @@ static int fuse_example_open(const char *path, struct fuse_file_info *fi) {
 static int fuse_example_read(const char *path, char *buf, size_t size, off_t offset,
                              struct fuse_file_info *fi) {
     int inode = lookup_inode(path);
-    if (inode < 0) return -ENOENT;  // 파일을 찾을 수 없음
+    if (inode < 0) return -ENOENT;  // No such file or directory
 
     const fs_object *obj = &fs_objects[inode];
     if (obj->data) {
@@ -135,12 +156,12 @@ static int fuse_example_readdir(const char *path, void *buf, fuse_fill_dir_t fil
     (void) fi;
 
     int inode = lookup_inode(path);
-    if (inode < 0) return -ENOENT;  // 파일을 찾을 수 없음
+    if (inode < 0) return -ENOENT;  // No such file or directory
 
     const fs_object *obj = &fs_objects[inode];
 
     if(strcmp(obj->type, "dir") != 0) {
-        return -ENOTDIR; // 디렉토리가 아님
+        return -ENOTDIR; // Not a directory
     }
 
     filler(buf, ".", NULL, 0);
@@ -165,7 +186,7 @@ static struct fuse_operations fuse_example_oper = {
     .getattr = fuse_example_getattr,
     .open = fuse_example_open,
     .read = fuse_example_read,
-	.readdir = fuse_example_readdir,
+    .readdir = fuse_example_readdir,
 };
 
 int main(int argc, char *argv[]) {
