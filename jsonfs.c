@@ -129,10 +129,43 @@ static int fuse_example_read(const char *path, char *buf, size_t size, off_t off
     return size;
 }
 
+static int fuse_example_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
+                                off_t offset, struct fuse_file_info *fi) {
+    (void) offset;
+    (void) fi;
+
+    int inode = lookup_inode(path);
+    if (inode < 0) return -ENOENT;  // 파일을 찾을 수 없음
+
+    const fs_object *obj = &fs_objects[inode];
+
+    if(strcmp(obj->type, "dir") != 0) {
+        return -ENOTDIR; // 디렉토리가 아님
+    }
+
+    filler(buf, ".", NULL, 0);
+    filler(buf, "..", NULL, 0);
+
+    int entries_length = json_object_array_length(obj->entries);
+    for(int i = 0; i < entries_length; i++) {
+        struct json_object *entry_obj = json_object_array_get_idx(obj->entries, i);
+        struct json_object *name_obj;
+
+        if (json_object_object_get_ex(entry_obj, "name", &name_obj)) {
+            const char *name = json_object_get_string(name_obj);
+            filler(buf, name, NULL, 0);
+        }
+    }
+
+    return 0;
+}
+
+
 static struct fuse_operations fuse_example_oper = {
     .getattr = fuse_example_getattr,
     .open = fuse_example_open,
     .read = fuse_example_read,
+	.readdir = fuse_example_readdir,
 };
 
 int main(int argc, char *argv[]) {
