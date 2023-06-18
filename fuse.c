@@ -9,12 +9,14 @@
 #include <stddef.h>
 #include <assert.h>
 #include <json-c/json.h>
+#include <pthread.h>
 
 #define MAX_FILES 128
 #define MAX_FILE_SIZE 4098
 #define MAX_ENTRIES 16
 
 struct json_object *fs_json;
+pthread_mutex_t lock ;
 
 struct json_object* find_inode(int inode) {
     int array_len = json_object_array_length(fs_json);
@@ -218,8 +220,17 @@ static struct fuse_operations jsonfs_oper = {
 };
 
 int main(int argc, char *argv[]) {
-    load_jsonfs("fs.json");
+	if(argc !=2) {
+		fprintf(stderr, "Usage: %s [input JSON file]\n", argv[0]);
+		return EXIT_FAILURE;
+	}
 
-    return fuse_main(argc, argv, &jsonfs_oper, NULL);
+
+	load_jsonfs(argv[1]);
+
+	argv[1] = argv[0];
+	return fuse_main(argc-1 , argv+1, &jsonfs_oper, NULL);
 }
+
+
 
