@@ -54,7 +54,7 @@ static fs_object *find_fs_object_by_path(const char *path) {
         int num_entries = json_object_array_length(fs_objects[i].entries);
         for (int j = 0; j < num_entries; j++) {
             entry = json_object_array_get_idx(fs_objects[i].entries, j);
-            if (strcmp(json_object_get_string(json_object_object_get(entry, "name")), path + 1) == 0) {
+            if (strcmp(json_object_get_string(json_object_object_get_ex(entry, "name")), path + 1) == 0) {
                 return &fs_objects[i];
             }
         }
@@ -62,6 +62,32 @@ static fs_object *find_fs_object_by_path(const char *path) {
     fprintf(stderr, "Error: path not found: %s\n", path);
     return NULL; // return NULL instead of exiting
 }
+
+static int getattr_callback(const char *path, struct stat *stbuf)
+{
+    int res = 0;
+
+    memset(stbuf, 0, sizeof(struct stat));
+    fs_object *fs_obj = find_fs_object_by_path(path);
+    if (!fs_obj) {
+        return -ENOENT; // No such file or directory
+    }
+
+    if (strcmp(fs_obj->type, "dir") == 0) {
+        stbuf->st_mode = S_IFDIR | 0755;
+        stbuf->st_nlink = 2;
+    } else if (strcmp(fs_obj->type, "reg") == 0) {
+        stbuf->st_mode = S_IFREG | 0444;
+        stbuf->st_nlink = 1;
+        stbuf->st_size = strlen(fs_obj->data); // assuming 'data' is a string in your fs_object
+    } else {
+        res = -ENOENT; // No such file or directory
+    }
+
+    return res;
+}
+
+
 
 static int readdir_callback(const char *path, void *buf, fuse_fill_dir_t filler,
                             off_t offset, struct fuse_file_info *fi) {
