@@ -38,38 +38,29 @@ static void load_json_fs(const char *filename) {
             fs_objects[i].name = json_object_get_string(tmp);
         if (json_object_object_get_ex(obj, "entries", &tmp))
             fs_objects[i].entries = tmp;
+
+        printf("Loaded fs_object: inode=%d, type=%s, name=%s\n",
+               fs_objects[i].inode, fs_objects[i].type, fs_objects[i].name);
     }
 }
 
+
 static fs_object *find_fs_object_by_path(const char *path) {
-    for (int i = 0; i < num_fs_objects; i++) {
-        if (strcmp(fs_objects[i].name, path + 1) == 0) {
-            return &fs_objects[i];
+    if (strcmp(path, "/") == 0) {
+        return &fs_objects[0];  // inode 0 is the root directory
+    }
+    for (int i = 1; i < num_fs_objects; i++) { // start from 1 as we have handled root case
+        struct json_object *entry;
+        int num_entries = json_object_array_length(fs_objects[i].entries);
+        for (int j = 0; j < num_entries; j++) {
+            entry = json_object_array_get_idx(fs_objects[i].entries, j);
+            if (strcmp(json_object_get_string(json_object_object_get(entry, "name")), path + 1) == 0) {
+                return &fs_objects[i];
+            }
         }
     }
     fprintf(stderr, "Error: path not found: %s\n", path);
-    exit(-ENOENT);
-}
-
-static int getattr_callback(const char *path, struct stat *stbuf) {
-    memset(stbuf, 0, sizeof(struct stat));
-
-    fs_object *obj = find_fs_object_by_path(path);
-    if (!obj) {
-        return -ENOENT;
-    }
-
-    if (strcmp(obj->type, "dir") == 0) {
-        stbuf->st_mode = S_IFDIR | 0755;
-        stbuf->st_nlink = 2;
-    } else if (strcmp(obj->type, "reg") == 0) {
-        stbuf->st_mode = S_IFREG | 0777;
-        stbuf->st_nlink = 1;
-        // Assume the size of a file is the length of its name
-        stbuf->st_size = strlen(obj->name);
-    }
-
-    return 0;
+    return NULL; // return NULL instead of exiting
 }
 
 static int readdir_callback(const char *path, void *buf, fuse_fill_dir_t filler,
