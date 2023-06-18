@@ -19,20 +19,30 @@ struct json_object *fs_json;
 pthread_mutex_t lock ;
 
 struct json_object* find_inode(int inode) {
-	if(fs_json == NULL) {
-		return NULL;
-	}
+    if(fs_json == NULL) {
+        return NULL;
+    }
     int array_len = json_object_array_length(fs_json);
     for (int i = 0; i < array_len; i++) {
         struct json_object* node = json_object_array_get_idx(fs_json, i);
+        if(node == NULL){
+            printf("ERROR: Cannot get object at index %d\n", i);
+            continue;
+        }
+
         struct json_object* inode_obj;
-        json_object_object_get_ex(node, "inode", &inode_obj);
-        if (json_object_get_int(inode_obj) == inode) {
+        if(!json_object_object_get_ex(node, "inode", &inode_obj)) {
+            printf("ERROR: Cannot get inode from object at index %d\n", i);
+            continue;
+        }
+        
+        if (inode_obj && json_object_get_int(inode_obj) == inode) {
             return node;
         }
     }
     return NULL;
 }
+
 
 struct jsonfs {
     int inode;
@@ -52,7 +62,7 @@ struct jsonfs_entry {
 
 struct jsonfs* load_jsonfs() {
     const char *path = "fs.json";
-    struct json_object *fs_json = json_object_from_file(path);
+    fs_json = json_object_from_file(path);
     if (fs_json == NULL) {
         fprintf(stderr, "Cannot open JSON file: %s\n", path);
         return NULL;
@@ -74,7 +84,6 @@ struct jsonfs* load_jsonfs() {
             fprintf(stderr, "Cannot get object at index %d\n", i);
             continue;
         }
-
         if (json_object_object_get_ex(fs_obj, "inode", &tmp))
             new_jsonfs[i].inode = json_object_get_int(tmp);
 
@@ -135,6 +144,8 @@ struct jsonfs* load_jsonfs() {
             return NULL;
         }
     }
+
+    
 
     return new_jsonfs;
 }
@@ -286,7 +297,12 @@ static struct fuse_operations jsonfs_oper = {
 
 int main(int argc, char *argv[])
 {
-	load_jsonfs();
+	fs_json = load_jsonfs();
+	if(fs_json == NULL){
+		fprintf(stderr, "Failed to load file system. Exiting...\n");
+		return 1;
+	}
 	return fuse_main(argc, argv, &jsonfs_oper, NULL) ;
 }
+
 
