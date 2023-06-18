@@ -46,62 +46,88 @@ struct jsonfs {
     int num_files;
     int num_dirs;
 };
-// JSON 파일 시스템 로드 함수
-struct jsonfs* load_jsonfs(const char* path) {
-    // File to JSON string
-    FILE *f = fopen(path, "rb");
-    fseek(f, 0, SEEK_END);
-    long fsize = ftell(f);
-    fseek(f, 0, SEEK_SET);
 
-    char *string = malloc(fsize + 1);
-    fread(string, 1, fsize, f);
-    fclose(f);
-    string[fsize] = 0;
-
-    // Parse JSON string to cJSON
-    cJSON *root = cJSON_Parse(string);
-    if (!root) {
-        const char *error_ptr = cJSON_GetErrorPtr();
-        if (error_ptr != NULL) {
-            fprintf(stderr, "Error before: %s\n", error_ptr);
-        }
+struct jsonfs* load_jsonfs() {
+    const char *path = "fs.json";
+    struct json_object *fs_json = json_object_from_file(path);
+    if (fs_json == NULL) {
+        fprintf(stderr, "Cannot open JSON file: %s\n", path);
+        return NULL;
+    }
+    if (!json_object_is_type(fs_json, json_type_array)) {
+        fprintf(stderr, "Root of JSON file is not an array\n");
         return NULL;
     }
 
-    struct jsonfs* fs = malloc(sizeof(struct jsonfs));
-    fs->num_files = 0;
-    fs->num_dirs = 0;
+    int jsonfs_len = json_object_array_length(fs_json);
+    struct jsonfs* new_jsonfs = calloc(jsonfs_len, sizeof(struct jsonfs));
 
-    // Begin iteration over JSON elements
-    cJSON *item = NULL;
-    cJSON_ArrayForEach(item, root) {
-        if (cJSON_IsObject(item)) {
-            // Create directory
-            struct jsonfs_dir *dir = malloc(sizeof(struct jsonfs_dir));
-            dir->inode = fs->num_dirs;
-            dir->num_entries = 0;
-            fs->dirs[fs->num_dirs++] = dir;
+    for (int i = 0; i < jsonfs_len; i++) {
+        struct json_object* fs_obj = json_object_array_get_idx(fs_json, i);
+        if (fs_obj == NULL) {
+            fprintf(stderr, "Cannot get object at index %d\n", i);
+            continue;
+        }
+    struct json_object* tmp;
 
-            // Parse "entries" array
-            cJSON *entries = cJSON_GetObjectItemCaseSensitive(item, "entries");
-            cJSON *entry = NULL;
-            cJSON_ArrayForEach(entry, entries) {
-                dir->entries[dir->num_entries++] = strdup(cJSON_GetStringValue(entry));
+if (json_object_object_get_ex(fs_obj, "inode", &tmp))
+    new_jsonfs[i].inode = json_object_get_int(tmp);
+
+if (json_object_object_get_ex(fs_obj, "type", &tmp)) {
+    const char *tmp_type = json_object_get_string(tmp);
+    if(tmp_type == NULL ) {
+        fprintf(stderr, "Type string is NULL\n");
+        free(new_jsonfs);
+        return NULL;
+    }
+    new_jsonfs[i].type = strdup(tmp_type);
+}
+
+if(new_jsonfs[i].type == NULL) {
+    fprintf(stderr, "Type is NULL\n");
+    free(new_jsonfs);
+    return NULL;
+}
+
+if (strcmp(new_jsonfs[i].type, "dir") == 0) {
+    if (json_object_object_get_ex(fs_obj, "entries", &tmp)) {
+        if (!json_object_is_type(tmp, json_type_array)) {
+            fprintf(stderr, "Entries field is not an array\n");
+            continue;
+        }
+        int entries_len = json_object_array_length(tmp);
+        new_jsonfs[i].entries = calloc(entries_len, sizeof(struct jsonfs_entry));
+
+        for (int j = 0; j < entries_len; j++) {
+            struct json_object* entry_obj = json_object_array_get_idx(tmp, j);
+            if (entry_obj == NULL) {
+                fprintf(stderr, "Cannot get object at index %d in entries\n", j);
+                continue;
             }
-        } else if (cJSON_IsString(item)) {
-            // Create file
-            struct jsonfs_file *file = malloc(sizeof(struct jsonfs_file));
-            file->inode = fs->num_files;
-            file->content = strdup(cJSON_GetStringValue(item));
-            fs->files[fs->num_files++] = file;
+
+            if (json_object_object_get_ex(entry_obj, "name", &tmp))
+                new_jsonfs[i].entries[j].name = strdup(json_object_get_string(tmp));
+
+            if (json_object_object_get_ex(entry_obj, "inode", &tmp))
+                new_jsonfs[i].entries[j].inode = json_object_get_int(tmp);
         }
     }
-
-    cJSON_Delete(root);
-    free(string);
-    return fs;
+} else if (strcmp(new_jsonfs[i].type, "reg") == 0) {
+    if (json_object_object_get_ex(fs_obj, "data", &tmp))
+        new_jsonfs[i].data = strdup(json_object_get_string(tmp));
+} else {
+    fprintf(stderr, "Unknown type: %s\n", new_jsonfs[i].type);
+    free(new_jsonfs[i].type);
+    free(new_jsonfs);
+    return NULL;
 }
+    
+    }
+
+    return new_jsonfs;
+}
+
+
 static int jsonfs_getattr(const char *path, struct stat *stbuf) {
     memset(stbuf, 0, sizeof(struct stat));
     
