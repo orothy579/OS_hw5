@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <json-c/json.h>
+#include <libgen.h>
 
 typedef struct {
     int inode;
@@ -94,28 +95,6 @@ static int lookup_inode(const char *path) {
     return inode;
 }
 
-
-static int fuse_example_getattr(const char *path, struct stat *stbuf) {
-    memset(stbuf, 0, sizeof(struct stat));
-    int inode = lookup_inode(path);
-    if (inode < 0) return -ENOENT;  // No such file or directory
-
-    const fs_object *obj = &fs_objects[inode];
-    print_fs_object(obj);  
-    // check path information
-    if (strcmp(obj->type, "reg") == 0) {
-        stbuf->st_mode = S_IFREG | 0666;
-        stbuf->st_nlink = 1;
-        stbuf->st_size = obj->data ? strlen(obj->data) : 0;
-    } else if (strcmp(obj->type, "dir") == 0) {
-        stbuf->st_mode = S_IFDIR | 0777;
-        stbuf->st_nlink = 2;
-    } else {
-        return -ENOENT;  // No such file or directory
-    }
-
-    return 0;
-}
 
 static int fuse_example_open(const char *path, struct fuse_file_info *fi) {
     int inode = lookup_inode(path);
@@ -211,6 +190,9 @@ static int fuse_example_write(const char *path, const char *buf, size_t size, of
 static int fuse_example_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
     printf("fuse_example_create called with path: %s\n", path);
     
+    int parent_inode = lookup_inode(dirname(strdup(path)));
+    if (parent_inode < 0) return -ENOENT;
+
     if (lookup_inode(path) >= 0) return -EEXIST;
 
     // Allocate a new fs_object.
@@ -223,17 +205,19 @@ static int fuse_example_create(const char *path, mode_t mode, struct fuse_file_i
     memset(new_obj, 0, sizeof(fs_object));
     new_obj->inode = num_fs_objects - 1;  // Assume that inodes are allocated sequentially.
     new_obj->type = "reg";
-    new_obj->name = strdup(path + 1);  // Skip the leading slash
+	char *temp_path = strdup(path);
+    new_obj->name = strdup(basename(temp_path));  // The name is only the last part of the path.
+	free (temp_path);
     if (!new_obj->name) return -ENOMEM;
     new_obj->data = NULL;  // Initially, the file has no data.
-    new_obj->entries = json_object_new_array();  // Since it's not a directory, entries is an empty array.
+    new_obj->entries = NULL;  // Since it's not a directory, entries is NULL.
 
-    // Add the new file to the root directory.
-    fs_object *root_obj = &fs_objects[0];
+    // Add the new file to its parent directory.
+    fs_object *parent_obj = &fs_objects[parent_inode];
     struct json_object *entry_obj = json_object_new_object();
     json_object_object_add(entry_obj, "name", json_object_new_string(new_obj->name));
     json_object_object_add(entry_obj, "inode", json_object_new_int(new_obj->inode));
-    json_object_array_add(root_obj->entries, entry_obj);
+    json_object_array_add(parent_obj->entries, entry_obj);
 
     // Open the new file.
     fi->fh = new_obj->inode;
@@ -241,6 +225,35 @@ static int fuse_example_create(const char *path, mode_t mode, struct fuse_file_i
     printf("fuse_example_create returning: %d\n", 0);
     return 0;
 }
+
+// Modified getattr function
+static int fuse_example_getattr(const char *path, struct stat *stbuf) {
+    int res = 0;
+
+    memset(stbuf, 0, sizeof(struct stat));
+    if(strcmp(path, "/") == 0) {
+        stbuf->st_mode = S_IFDIR | 0755;
+        stbuf->st_nlink = 2;
+    } else {
+        int inode = lookup_inode(path);
+        if (inode < 0) return -ENOENT;
+
+        fs_object *obj = &fs_objects[inode];
+        if (strcmp(obj->type, "reg") == 0) {
+            stbuf->st_mode = S_IFREG | 0666;
+            stbuf->st_nlink = 1;
+            stbuf->st_size = obj->data ? strlen(obj->data) : 0;
+        } else if (strcmp(obj->type, "dir") == 0) {
+            stbuf->st_mode = S_IFDIR | 0755;
+            stbuf->st_nlink = 2;
+        } else {
+            res = -ENOENT;
+        }
+    }
+
+    return res;
+}
+
 
 static int fuse_example_truncate(const char *path, off_t newsize) {
     int inode = lookup_inode(path);
@@ -274,6 +287,36 @@ static int fuse_example_utimens(const char *path, const struct timespec tv[2]) {
     return 0;
 }
 
+static int fuse_example_mkdir(const char *path, mode_t mode) {
+    printf("fuse_example_mkdir called with path: %s\n", path);
+    
+    if (lookup_inode(path) >= 0) return -EEXIST; // Directory already exists
+
+    // Allocate a new fs_object.
+    num_fs_objects++;
+    fs_objects = realloc(fs_objects, num_fs_objects * sizeof(fs_object));
+    if (!fs_objects) return -ENOMEM; // Not enough memory
+
+    // Initialize the new fs_object.
+    fs_object *new_obj = &fs_objects[num_fs_objects - 1];
+    memset(new_obj, 0, sizeof(fs_object));
+    new_obj->inode = num_fs_objects - 1;  // Assume that inodes are allocated sequentially.
+    new_obj->type = "dir";
+    new_obj->name = strdup(path + 1);  // Skip the leading slash
+    if (!new_obj->name) return -ENOMEM; // Not enough memory
+    new_obj->data = NULL;  // Since it's a directory, there's no data.
+    new_obj->entries = json_object_new_array();  // Create an empty array of entries.
+
+    // Add the new directory to the root directory.
+    fs_object *root_obj = &fs_objects[0];
+    struct json_object *entry_obj = json_object_new_object();
+    json_object_object_add(entry_obj, "name", json_object_new_string(new_obj->name));
+    json_object_object_add(entry_obj, "inode", json_object_new_int(new_obj->inode));
+    json_object_array_add(root_obj->entries, entry_obj);
+
+    printf("fuse_example_mkdir returning: %d\n", 0);
+    return 0;
+}
 
 
 static struct fuse_operations fuse_example_oper = {
@@ -285,7 +328,7 @@ static struct fuse_operations fuse_example_oper = {
 	.create = fuse_example_create,
     .truncate = fuse_example_truncate,
     .utimens = fuse_example_utimens,
-
+    .mkdir = fuse_example_mkdir,
 };
 
 
