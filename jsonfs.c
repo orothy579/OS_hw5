@@ -9,6 +9,33 @@
 #include <json-c/json.h>
 #include <libgen.h>
 
+// We will use a dynamic array to hold our free inodes.
+int *free_inodes = NULL;
+int num_free_inodes = 0;
+
+static int num_fs_objects;
+void add_free_inode(int inode) {
+    // Increase the size of the free_inodes array.
+    free_inodes = realloc(free_inodes, (num_free_inodes + 1) * sizeof(int));
+    // Add the inode to the end of the array.
+    free_inodes[num_free_inodes] = inode;
+    num_free_inodes++;
+}
+
+int get_free_inode() {
+    if (num_free_inodes == 0) {
+        // If there are no free inodes, we just use the next available number.
+        return num_fs_objects++;
+    } else {
+        // Otherwise, we remove the last element from the free_inodes array and return it.
+        int inode = free_inodes[num_free_inodes - 1];
+        free_inodes = realloc(free_inodes, (num_free_inodes - 1) * sizeof(int));
+        num_free_inodes--;
+        return inode;
+    }
+}
+
+
 typedef struct {
     int inode;
     const char *type;
@@ -18,7 +45,6 @@ typedef struct {
 } fs_object;
 
 static fs_object *fs_objects;
-static int num_fs_objects;
 
 void print_fs_object(const fs_object *obj) {
     printf("fs_object: inode=%d, type=%s, name=%s, data=%s\n",
@@ -324,12 +350,27 @@ static int fuse_example_unlink(const char *path) {
     int inode = lookup_inode(path);
     if (inode < 0) return -ENOENT;
 
+    // If the fs_object is a directory and not empty, return -ENOTEMPTY
+    if(strcmp(fs_objects[inode].type, "dir") == 0) {
+        struct json_object *entry_list = fs_objects[inode].entries;
+        int num_entries = json_object_array_length(entry_list);
+        if(num_entries > 0) {
+            return -ENOTEMPTY;
+        }
+    }
+
     // Free the memory for the file's name and data.
     free(fs_objects[inode].name);
     if (fs_objects[inode].data) free(fs_objects[inode].data);
 
-    // Mark this fs_object as free.
+    // Add the inode back to the free list
+    add_free_inode(inode);
+
+    // Reset fs_object fields
     fs_objects[inode].type = NULL;
+    fs_objects[inode].name = NULL;
+    fs_objects[inode].data = NULL;
+    fs_objects[inode].entries = NULL;
 
     // Remove the entry for this file from its parent directory.
     char *parent_path = strdup(path);
@@ -364,6 +405,64 @@ static int fuse_example_unlink(const char *path) {
     printf("fuse_example_unlink returning: %d\n", 0);
     return 0;
 }
+static int fuse_example_rmdir(const char *path)
+{
+    printf("fuse_example_rmdir called with path: %s\n", path);
+
+    int inode = lookup_inode(path);
+    if (inode < 0) return -ENOENT;
+
+    // If the fs_object is not a directory, return -ENOTDIR
+    if(strcmp(fs_objects[inode].type, "dir") != 0) {
+        return -ENOTDIR;
+    }
+
+    // If the directory is not empty, return -ENOTEMPTY
+    struct json_object *entry_list = fs_objects[inode].entries;
+    int num_entries = json_object_array_length(entry_list);
+    if(num_entries > 0) {
+        return -ENOTEMPTY;
+    }
+
+    // Free the memory for the directory's name.
+    free(fs_objects[inode].name);
+
+    // Mark this fs_object as free.
+    fs_objects[inode].type = NULL;
+
+    // Remove the entry for this directory from its parent directory.
+    char *parent_path = strdup(path);
+    dirname(parent_path);
+    int parent_inode = lookup_inode(parent_path);
+    free(parent_path);
+    if (parent_inode < 0) return -ENOENT;  // This should never happen.
+
+    struct json_object *parent_entry_list = fs_objects[parent_inode].entries;
+    int parent_num_entries = json_object_array_length(parent_entry_list);
+    for (int i = 0; i < parent_num_entries; i++) {
+        struct json_object *entry_obj = json_object_array_get_idx(parent_entry_list, i);
+        struct json_object *inode_obj;
+        if (json_object_object_get_ex(entry_obj, "inode", &inode_obj)) {
+            int entry_inode = json_object_get_int(inode_obj);
+            if (entry_inode == inode) {
+                // We've found the entry for the directory we're deleting. Remove it.
+                // Since there's no json_object_array_remove_idx, we have to create a new array without the deleted element.
+                struct json_object *new_entry_list = json_object_new_array();
+                for (int j = 0; j < parent_num_entries; j++) {
+                    if (j != i) {
+                        json_object_array_add(new_entry_list, json_object_array_get_idx(parent_entry_list, j));
+                    }
+                }
+                json_object_put(parent_entry_list);  // Decrement the reference count of the old entry_list so it gets freed.
+                fs_objects[parent_inode].entries = new_entry_list;  // Use the new entry_list.
+                break;
+            }
+        }
+    }
+
+    printf("fuse_example_rmdir returning: %d\n", 0);
+    return 0;
+}
 
 
 static struct fuse_operations fuse_example_oper = {
@@ -377,6 +476,7 @@ static struct fuse_operations fuse_example_oper = {
     .utimens = fuse_example_utimens,
     .mkdir = fuse_example_mkdir,
     .unlink = fuse_example_unlink,
+	.rmdir = fuse_example_rmdir,
 };
 
 
