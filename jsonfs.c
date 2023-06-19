@@ -318,6 +318,53 @@ static int fuse_example_mkdir(const char *path, mode_t mode) {
     return 0;
 }
 
+static int fuse_example_unlink(const char *path) {
+    printf("fuse_example_unlink called with path: %s\n", path);
+
+    int inode = lookup_inode(path);
+    if (inode < 0) return -ENOENT;
+
+    // Free the memory for the file's name and data.
+    free(fs_objects[inode].name);
+    if (fs_objects[inode].data) free(fs_objects[inode].data);
+
+    // Mark this fs_object as free.
+    fs_objects[inode].type = NULL;
+
+    // Remove the entry for this file from its parent directory.
+    char *parent_path = strdup(path);
+    dirname(parent_path);
+    int parent_inode = lookup_inode(parent_path);
+    free(parent_path);
+    if (parent_inode < 0) return -ENOENT;  // This should never happen.
+
+    struct json_object *entry_list = fs_objects[parent_inode].entries;
+    int num_entries = json_object_array_length(entry_list);
+    for (int i = 0; i < num_entries; i++) {
+        struct json_object *entry_obj = json_object_array_get_idx(entry_list, i);
+        struct json_object *inode_obj;
+        if (json_object_object_get_ex(entry_obj, "inode", &inode_obj)) {
+            int entry_inode = json_object_get_int(inode_obj);
+            if (entry_inode == inode) {
+                // We've found the entry for the file we're deleting. Remove it.
+                // Since there's no json_object_array_remove_idx, we have to create a new array without the deleted element.
+                struct json_object *new_entry_list = json_object_new_array();
+                for (int j = 0; j < num_entries; j++) {
+                    if (j != i) {
+                        json_object_array_add(new_entry_list, json_object_array_get_idx(entry_list, j));
+                    }
+                }
+                json_object_put(entry_list);  // Decrement the reference count of the old entry_list so it gets freed.
+                fs_objects[parent_inode].entries = new_entry_list;  // Use the new entry_list.
+                break;
+            }
+        }
+    }
+
+    printf("fuse_example_unlink returning: %d\n", 0);
+    return 0;
+}
+
 
 static struct fuse_operations fuse_example_oper = {
     .getattr = fuse_example_getattr,
@@ -329,6 +376,7 @@ static struct fuse_operations fuse_example_oper = {
     .truncate = fuse_example_truncate,
     .utimens = fuse_example_utimens,
     .mkdir = fuse_example_mkdir,
+    .unlink = fuse_example_unlink,
 };
 
 
