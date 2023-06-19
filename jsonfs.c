@@ -8,12 +8,22 @@
 #include <fcntl.h>
 #include <json-c/json.h>
 #include <libgen.h>
+#include <pthread.h>
 
+#define MAX_TEXT_SIZE 4096
+#define MAX_ENTRIES_PER_DIR 16
+#define MAX_FILES 128
+
+#define MAX_FS_OBJECTS 4096
+int max_fs_objects = 4096;
 // We will use a dynamic array to hold our free inodes.
 int *free_inodes = NULL;
 int num_free_inodes = 0;
 
 static int num_fs_objects;
+
+pthread_mutex_t fs_mutex = PTHREAD_MUTEX_INITIALIZER;
+
 void add_free_inode(int inode) {
     // Increase the size of the free_inodes array.
     free_inodes = realloc(free_inodes, (num_free_inodes + 1) * sizeof(int));
@@ -52,6 +62,7 @@ void print_fs_object(const fs_object *obj) {
            obj->data ? obj->data : "Unknown");
 }
 
+
 static void load_json_fs(const char *filename) {
     struct json_object *fs_json = json_object_from_file(filename);
     if (!fs_json) {
@@ -60,6 +71,11 @@ static void load_json_fs(const char *filename) {
     }
 
     num_fs_objects = json_object_array_length(fs_json);
+    if(num_fs_objects > MAX_FILES){
+        fprintf(stderr, "Too many files in the system\n");
+        exit(1);
+    }
+    
     fs_objects = calloc(num_fs_objects, sizeof(fs_object));
     for (int i = 0; i < num_fs_objects; i++) {
         struct json_object *obj = json_object_array_get_idx(fs_json, i);
@@ -75,19 +91,119 @@ static void load_json_fs(const char *filename) {
         }
         if (json_object_object_get_ex(obj, "data", &tmp)) {
             const char *data = json_object_get_string(tmp);
+            if(strlen(data) > MAX_TEXT_SIZE){
+                fprintf(stderr, "File content size exceeds limit\n");
+                exit(1);
+            }
             fs_objects[i].data = strdup(data);
         } else {
             fs_objects[i].data = NULL;
         }
-        if (json_object_object_get_ex(obj, "entries", &tmp))
+        if (json_object_object_get_ex(obj, "entries", &tmp)){
             fs_objects[i].entries = tmp;
+            if(json_object_array_length(tmp) > MAX_ENTRIES_PER_DIR){
+                fprintf(stderr, "Too many files in a directory\n");
+                exit(1);
+            }
+        }
 
         print_fs_object(&fs_objects[i]);
     }
 }
 
+void initialize_file_system(const char *json_file) {
+	pthread_mutex_lock(&fs_mutex);
+    struct json_object *root_obj = json_object_from_file(json_file);
+    if (!root_obj) {
+        printf("Failed to load file system from %s\n", json_file);
+        exit(1);
+    }
+
+    int array_length = json_object_array_length(root_obj);
+
+    for (int i = 0; i < array_length; i++) {
+        struct json_object *fs_object_json = json_object_array_get_idx(root_obj, i);
+
+        struct json_object *inode_obj;
+        struct json_object *type_obj;
+        struct json_object *name_obj;
+        struct json_object *data_obj;
+        struct json_object *entries_obj;
+
+        json_object_object_get_ex(fs_object_json, "inode", &inode_obj);
+        json_object_object_get_ex(fs_object_json, "type", &type_obj);
+        json_object_object_get_ex(fs_object_json, "name", &name_obj);
+        json_object_object_get_ex(fs_object_json, "data", &data_obj);
+        json_object_object_get_ex(fs_object_json, "entries", &entries_obj);
+
+        fs_objects[i].inode = json_object_get_int(inode_obj);
+        fs_objects[i].type = strdup(json_object_get_string(type_obj));
+        fs_objects[i].name = name_obj ? strdup(json_object_get_string(name_obj)) : NULL;
+        fs_objects[i].data = data_obj ? strdup(json_object_get_string(data_obj)) : NULL;
+        fs_objects[i].entries = entries_obj ? json_object_get(entries_obj) : NULL;
+    }
+	pthread_mutex_unlock(&fs_mutex);
+    json_object_put(root_obj);
+}
+
+void store_file_system(char *json_file) {
+	pthread_mutex_lock(&fs_mutex);
+    // Initialize a new JSON array object
+    struct json_object *root_obj = json_object_new_array();
+    
+    // Iterate over all fs_objects
+    for (int i = 0; i < MAX_FS_OBJECTS; i++) {
+        // Check if the fs_object is in use (type is not NULL)
+        if (fs_objects[i].type != NULL) {
+            struct json_object *fs_obj = json_object_new_object();
+
+            // Add other fields...
+            json_object_object_add(fs_obj, "inode", json_object_new_int(fs_objects[i].inode));
+            json_object_object_add(fs_obj, "type", json_object_new_string(fs_objects[i].type));
+            json_object_object_add(fs_obj, "name", json_object_new_string(fs_objects[i].name));
+
+            // If it's a regular file, add data
+            if(strcmp(fs_objects[i].type, "reg") == 0) {
+                json_object_object_add(fs_obj, "data", json_object_new_string(fs_objects[i].data));
+            }
+
+            // If it's a directory, add entries
+            if(strcmp(fs_objects[i].type, "dir") == 0) {
+                struct json_object *entry_list = fs_objects[i].entries;
+                json_object_object_add(fs_obj, "entries", json_object_get(entry_list)); // Increments the reference count of entry_list
+            }
+
+            json_object_array_add(root_obj, fs_obj);
+        }
+    }
+    
+    // Write the root_obj to the JSON file
+    if (json_object_to_file_ext(json_file, root_obj, JSON_C_TO_STRING_PRETTY) != 0) {
+        fprintf(stderr, "Failed to write JSON file: %s\n", json_file);
+    }
+
+	pthread_mutex_unlock(&fs_mutex);
+    // Decrement the reference count of root_obj to free it
+    json_object_put(root_obj);
+}
+
+static void *fuse_example_init(struct fuse_conn_info *conn) {
+    (void) conn;
+    initialize_file_system("fs.json");
+    return NULL;
+}
+
+static void fuse_example_destroy(void *private_data) {
+    (void) private_data;
+    store_file_system("fs_edited.json");
+}
+
 static int lookup_inode(const char *path) {
     char *path_copy = strdup(path);
+	if(!path_copy) {
+		return -ENOMEM;
+	}
+
     char *seg = strtok(path_copy, "/");
     int inode = 0;  // root directory
 
@@ -188,9 +304,10 @@ static int fuse_example_readdir(const char *path, void *buf, fuse_fill_dir_t fil
 
 static int fuse_example_write(const char *path, const char *buf, size_t size, off_t offset,
                               struct fuse_file_info *fi) {
-    int inode = lookup_inode(path);
+	int inode = lookup_inode(path);
     if (inode < 0) return -ENOENT;
-
+	size_t  new_size = offset + size;
+	if(new_size > MAX_TEXT_SIZE) return -EFBIG;
     fs_object *obj = &fs_objects[inode];
     if (obj->data) {
         // Make sure the file is large enough to write the data.
@@ -209,11 +326,12 @@ static int fuse_example_write(const char *path, const char *buf, size_t size, of
         if (!obj->data) return -ENOMEM;
         memcpy(obj->data, buf, size);
     }
-
     return size;
 }
 
 static int fuse_example_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
+	pthread_mutex_lock(&fs_mutex);
+	if(num_fs_objects >= MAX_FILES) return -EDQUOT;
     printf("fuse_example_create called with path: %s\n", path);
     
     int parent_inode = lookup_inode(dirname(strdup(path)));
@@ -249,10 +367,10 @@ static int fuse_example_create(const char *path, mode_t mode, struct fuse_file_i
     fi->fh = new_obj->inode;
 
     printf("fuse_example_create returning: %d\n", 0);
-    return 0;
+    pthread_mutex_unlock(&fs_mutex);
+	return 0;
 }
 
-// Modified getattr function
 static int fuse_example_getattr(const char *path, struct stat *stbuf) {
     int res = 0;
 
@@ -276,10 +394,8 @@ static int fuse_example_getattr(const char *path, struct stat *stbuf) {
             res = -ENOENT;
         }
     }
-
     return res;
 }
-
 
 static int fuse_example_truncate(const char *path, off_t newsize) {
     int inode = lookup_inode(path);
@@ -314,14 +430,19 @@ static int fuse_example_utimens(const char *path, const struct timespec tv[2]) {
 }
 
 static int fuse_example_mkdir(const char *path, mode_t mode) {
+
     printf("fuse_example_mkdir called with path: %s\n", path);
     
-    if (lookup_inode(path) >= 0) return -EEXIST; // Directory already exists
-
+    if (lookup_inode(path) >= 0){
+		return -EEXIST; // Directory already exists
+	}
+	
     // Allocate a new fs_object.
     num_fs_objects++;
     fs_objects = realloc(fs_objects, num_fs_objects * sizeof(fs_object));
-    if (!fs_objects) return -ENOMEM; // Not enough memory
+    if (!fs_objects){ 
+		 return -ENOMEM; // Not enough memory
+		}
 
     // Initialize the new fs_object.
     fs_object *new_obj = &fs_objects[num_fs_objects - 1];
@@ -333,16 +454,25 @@ static int fuse_example_mkdir(const char *path, mode_t mode) {
     new_obj->data = NULL;  // Since it's a directory, there's no data.
     new_obj->entries = json_object_new_array();  // Create an empty array of entries.
 
-    // Add the new directory to the root directory.
-    fs_object *root_obj = &fs_objects[0];
+    // Find the parent directory.
+    char *parent_path = strdup(path);
+    dirname(parent_path);
+    int parent_inode = lookup_inode(parent_path);
+    free(parent_path);
+    if (parent_inode < 0) return -ENOENT;  // Parent directory does not exist.
+    fs_object *parent_obj = &fs_objects[parent_inode];
+
+    // Add the new directory to the parent directory.
     struct json_object *entry_obj = json_object_new_object();
     json_object_object_add(entry_obj, "name", json_object_new_string(new_obj->name));
     json_object_object_add(entry_obj, "inode", json_object_new_int(new_obj->inode));
-    json_object_array_add(root_obj->entries, entry_obj);
+    json_object_array_add(parent_obj->entries, entry_obj);
 
     printf("fuse_example_mkdir returning: %d\n", 0);
     return 0;
 }
+
+
 
 static int fuse_example_unlink(const char *path) {
     printf("fuse_example_unlink called with path: %s\n", path);
@@ -405,6 +535,12 @@ static int fuse_example_unlink(const char *path) {
     printf("fuse_example_unlink returning: %d\n", 0);
     return 0;
 }
+
+// Declare the json_object_array_splice() function.
+extern void json_object_array_splice(struct json_object *array, int index, int num_elements);
+
+
+
 static int fuse_example_rmdir(const char *path)
 {
     printf("fuse_example_rmdir called with path: %s\n", path);
@@ -466,13 +602,15 @@ static int fuse_example_rmdir(const char *path)
 
 
 static struct fuse_operations fuse_example_oper = {
+    .init = fuse_example_init,
+    .destroy = fuse_example_destroy,
     .getattr = fuse_example_getattr,
     .open = fuse_example_open,
     .read = fuse_example_read,
     .readdir = fuse_example_readdir,
+	.truncate = fuse_example_truncate,
 	.write = fuse_example_write,
 	.create = fuse_example_create,
-    .truncate = fuse_example_truncate,
     .utimens = fuse_example_utimens,
     .mkdir = fuse_example_mkdir,
     .unlink = fuse_example_unlink,
@@ -482,6 +620,7 @@ static struct fuse_operations fuse_example_oper = {
 
 
 int main(int argc, char *argv[]) {
+	pthread_mutex_init(&fs_mutex,NULL);
     load_json_fs("fs.json");
     return fuse_main(argc, argv, &fuse_example_oper, NULL);
 }
